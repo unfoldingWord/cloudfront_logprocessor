@@ -1,0 +1,11 @@
+boto3==1.18.50
+botocore==1.21.50
+graphyte==1.7.0
+jmespath==0.10.0
+mysql-connector-python==8.0.26
+protobuf==3.18.0
+python-dateutil==2.8.2
+python-dotenv==0.19.0
+s3transfer==0.5.0
+six==1.16.0
+urllib3==1.26.7
