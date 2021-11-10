@@ -163,6 +163,26 @@ class CloudFrontLogProcessor:
         # We will only arrive here when something went wrong
         return False
 
+    def collect_db_metrics(self):
+        cursor = self.db.cursor()
+
+        # Total number of lines in DB
+        sql_count_total = "SELECT COUNT(*) FROM `cloudfront_log`"
+        cursor.execute(sql_count_total)
+
+        result = cursor.fetchone()
+        self.set_metric("db.lines-total", result[0])
+
+        # Number of lines per host
+        sql_count_per_host = "SELECT `x-host-header`, COUNT(*) FROM `cloudfront_log` GROUP BY `x-host-header`"
+        cursor.execute(sql_count_per_host)
+
+        result = cursor.fetchall()
+        for item in result:
+            host = str(item[0]).replace(".", "_")
+
+            self.set_metric("db.lines-per-host." + host, item[1])
+
     def send_metrics(self):
         graphite_host = os.getenv("GRAPHITE_HOST")
         graphite_prefix = os.getenv("GRAPHITE_PREFIX")
@@ -200,7 +220,10 @@ class CloudFrontLogProcessor:
             # Remove tmp_file
             os.remove(tmp_file)
 
-        # Collect final metrics
+        # Collect metrics about DB
+        self.collect_db_metrics()
+
+        # Finally, collect performance metrics
         time_end = time.perf_counter()
         mem_usage = tracemalloc.get_traced_memory()
         tracemalloc.stop()
