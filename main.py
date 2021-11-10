@@ -221,7 +221,7 @@ class CloudFrontLogProcessor:
             os.remove(tmp_file)
 
         # Collect metrics about DB
-        self.collect_db_metrics()
+        # self.collect_db_metrics()
 
         # Finally, collect performance metrics
         time_end = time.perf_counter()
