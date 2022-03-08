@@ -1,13 +1,16 @@
-import mysql.connector
 import os
 import gzip
 import csv
 from dotenv import load_dotenv
+import datetime
 import time
 import tracemalloc
 import boto3
 import graphyte
 import logging
+import json
+import requests
+import re
 
 
 class CloudFrontLogProcessor:
@@ -30,15 +33,17 @@ class CloudFrontLogProcessor:
         self.s3_connection = aws_session.resource("s3")
         self.s3_log_bucket = self.s3_connection.Bucket(self.S3_LOG_BUCKET)
 
+        self.loki_api_path = os.getenv("LOKI_API_PATH")
+        self.max_files = int(os.getenv("MAX_FILES"))
+        self.max_lines = int(os.getenv("MAX_LINES"))
+
         # Constants
         self.METRIC_FILES_PROCESSED = "files-processed"
         self.METRIC_LINES_PROCESSED = "lines-processed"
-        self.METRIC_LINES_INSERTED = "lines-inserted"
+        self.METRIC_FAILURE_IN_BATCH = "failure-in-batch"
         self.METRIC_MEMORY_USAGE_MIN = "memory-usage-min"
         self.METRIC_MEMORY_USAGE_MAX = "memory-usage-max"
         self.METRIC_TIME_ELAPSED = "time_elapsed"
-
-        self.db = self.connect()
 
         self.dict_metrics = self.init_metrics()
 
@@ -46,7 +51,7 @@ class CloudFrontLogProcessor:
         metrics = dict()
         metrics[self.METRIC_FILES_PROCESSED] = 0
         metrics[self.METRIC_LINES_PROCESSED] = 0
-        metrics[self.METRIC_LINES_INSERTED] = 0
+        metrics[self.METRIC_FAILURE_IN_BATCH] = 0
         metrics[self.METRIC_MEMORY_USAGE_MIN] = 0
         metrics[self.METRIC_MEMORY_USAGE_MAX] = 0
         metrics[self.METRIC_TIME_ELAPSED] = 0
@@ -62,21 +67,11 @@ class CloudFrontLogProcessor:
     def get_metrics(self):
         return self.dict_metrics
 
-    def connect(self):
-        my_db = mysql.connector.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_DATABASE"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD")
-        )
-
-        return my_db
-
     def get_log_files(self):
         lst_objects = list()
 
         # List objects within this bucket
-        max_iter = os.getenv("MAX_FILES")
+        max_iter = self.max_files
 
         current_iter = 0
         for obj in self.s3_log_bucket.objects.all():
@@ -101,9 +96,6 @@ class CloudFrontLogProcessor:
 
             lst_loglines = []
             for row in reader:
-                # Replace dashes with None values
-                row = [None if col == "-" else col for col in row]
-
                 lst_loglines.append(row)
 
             self.inc_metric(self.METRIC_LINES_PROCESSED, len(lst_loglines))
@@ -114,74 +106,93 @@ class CloudFrontLogProcessor:
             return lst_loglines
 
     def remove_log_file(self, obj_s3_file):
-        # Only on prod, remove files
+        # Only when running on prod, remove files
         if os.getenv("STAGE") == 'prod':
             self.logger.debug("Removing file %s" % obj_s3_file.key)
             obj_s3_file.delete()
 
-    def get_log_columns(self, filepath):
-        with gzip.open(filepath, 'rt') as logfile:
-            # Skip first line, contains version number
-            next(logfile)
+    def build_loki_lines(self, lst_lines):
+        dict_loki_lines = dict()
 
-            # Second line contains headers, but we need to remove the prefix
-            header = logfile.readline()
-            lst_header = header.replace("#Fields: ", "").split(" ")
+        for line in lst_lines:
+            # streams/labels: distribution (formerly distribution) and year
+            distribution = line[15]
+            year = line[0].split("-")[0]
 
-            # Linebreaks may be in the file, so we strip them out
-            lst_header = [header.rstrip("\n") for header in lst_header]
+            if distribution not in dict_loki_lines:
+                dict_loki_lines[distribution] = dict()
 
-            return lst_header
+            if year not in dict_loki_lines[distribution]:
+                dict_loki_lines[distribution][year] = list()
 
-    def insert_into_db(self, lst_columns, lst_loglines):
+            # create timestamp (unix epoch in nanoseconds)
+            ts = datetime.datetime.strptime(line[0] + " " + line[1], "%Y-%m-%d %H:%M:%S").timestamp()
+            # timestamp() returns float, so we convert to int to get rid of the '.0'
+            ts = str(int(ts)) + "000000000"
 
-        sql_columns = "`" + "`, `".join(lst_columns) + "`"
-        sql_placeholders = ", ".join(["%s" for elm in lst_columns])
+            # build the line and add to dictionary
+            loki_line = "\t".join(line)
+            dict_loki_lines[distribution][year].append({"ts": ts, "line": loki_line})
 
-        sql_prepared = "INSERT INTO `cloudfront_log` (" + sql_columns + ") VALUES (" + sql_placeholders + ")"
+        # By sorting lines by timestamp, we make sure that
+        # at least within each batch the lines are being sent
+        # in the correct order. This prevents almost all 'entry too far behind' issues.
+        for distribution in dict_loki_lines:
+            for year in dict_loki_lines[distribution]:
+                dict_loki_lines[distribution][year].sort(key=lambda item: item.get("ts"))
 
+        return dict_loki_lines
+
+    def send_to_loki(self, dict_lines):
+        url = self.loki_api_path
+        headers = {
+            'Content-type': 'application/json'
+        }
+
+        payload = {"streams": list()}
+
+        for distribution in dict_lines:
+            for year in dict_lines[distribution]:
+
+                labels = {"system": "cloudfront", "distribution": distribution, "year": year}
+
+                lst_values = list()
+                for entry in dict_lines[distribution][year]:
+                    lst_values.append([entry["ts"], entry["line"]])
+
+                payload["streams"].append({"stream": labels, "values": lst_values})
+
+        # print(json.dumps(payload, indent=2))
+
+        payload = json.dumps(payload)
         try:
-            cursor = self.db.cursor()
-            cursor.executemany(sql_prepared, lst_loglines)
+            answer = requests.post(url, data=payload, headers=headers)
 
-            amt_inserted = cursor.rowcount
-            self.inc_metric(self.METRIC_LINES_INSERTED, amt_inserted)
+            if answer.status_code != 204:
+                self.set_metric(self.METRIC_FAILURE_IN_BATCH, 1)
+                self.set_metric("failure.status-code." + str(answer.status_code), 1)
 
-            self.db.commit()
+                if answer.status_code == 400:
+                    # 400 - Bad Request: Entries out of order
+                    # Find the amount of ignored lines
+                    regex = "total ignored: ([0-9]+) out of"
+                    match = re.search(regex, str(answer.content))
+                    if len(match.group()) > 0:
+                        self.set_metric("lines-failed", int(match.group(1)))
 
-            if int(amt_inserted) == len(lst_loglines):
-                return True
+                if answer.status_code in [429, 502]:
+                    # 429 - Too many requests: Ingestion rate limit exceeded
+                    # 502 - Bad gateway: Loki has issues
+                    return False
 
-            else:
-                amt_skipped = len(lst_loglines) - int(amt_inserted)
+                # print(answer.status_code)
+                # print(answer.content)
+        except requests.exceptions.ConnectionError:
+            # In case we cannot even connect
+            return False
 
-                self.logger.error("%s out of %s lines have not been inserted" % (amt_skipped, len(lst_loglines)))
-
-        except mysql.connector.Error as sql_error:
-            self.logger.error(sql_error)
-
-        # We will only arrive here when something went wrong
-        return False
-
-    def collect_db_metrics(self):
-        cursor = self.db.cursor()
-
-        # Total number of lines in DB
-        sql_count_total = "SELECT COUNT(*) FROM `cloudfront_log`"
-        cursor.execute(sql_count_total)
-
-        result = cursor.fetchone()
-        self.set_metric("db.lines-total", result[0])
-
-        # Number of lines per host
-        sql_count_per_host = "SELECT `x-host-header`, COUNT(*) FROM `cloudfront_log` GROUP BY `x-host-header`"
-        cursor.execute(sql_count_per_host)
-
-        result = cursor.fetchall()
-        for item in result:
-            host = str(item[0]).replace(".", "_")
-
-            self.set_metric("db.lines-per-host." + host, item[1])
+        # By default, all is fine ;-)
+        return True
 
     def send_metrics(self):
         graphite_host = os.getenv("GRAPHITE_HOST")
@@ -194,34 +205,42 @@ class CloudFrontLogProcessor:
             graphyte.send(key, dict_metrics[key])
 
     def run(self):
-        lst_files = self.get_log_files()
-
         tracemalloc.start()
         time_start = time.perf_counter()
 
+        lst_files = self.get_log_files()
+
+        lst_log_lines = list()
+        lst_s3_files = list()
+
         for file in lst_files:
+            # Try to prevent Ingestion rate limit issue
+            if len(lst_log_lines) >= self.max_lines:
+                break
+
+            # print("Processing " + file)
             # Download S3 file to temp location
             tmp_file = "/tmp/" + file.replace("/", "_")
-
             obj_s3_file = self.s3_connection.Object(bucket_name=self.S3_LOG_BUCKET, key=file)
             obj_s3_file.download_file(tmp_file)
 
-            # Get the headers
-            lst_columns = self.get_log_columns(tmp_file)
-
             # Get the actual data
-            lst_loglines = self.read_log_file(tmp_file)
+            lst_log_lines += self.read_log_file(tmp_file)
 
-            # Insert into DB
-            # Only when we have inserted everything, we can remove the file
-            if self.insert_into_db(lst_columns, lst_loglines):
-                self.remove_log_file(obj_s3_file)
+            # Add s3 file to list
+            lst_s3_files.append(obj_s3_file)
 
             # Remove tmp_file
             os.remove(tmp_file)
 
-        # Collect metrics about DB
-        # self.collect_db_metrics()
+        # fold the log lines into a usable structure
+        dict_log_lines = self.build_loki_lines(lst_log_lines)
+
+        # Send files to loki
+        if self.send_to_loki(dict_log_lines):
+            # Remove files from S3 storage
+            for s3_file in lst_s3_files:
+                self.remove_log_file(s3_file)
 
         # Finally, collect performance metrics
         time_end = time.perf_counter()

@@ -8,7 +8,7 @@ With AWS CloudFront, you can either send your log files to CloudWatch,
 or you can have them stored as Standard Log files in an S3 bucket. 
 This script takes care of these log files by
 1) Reading logfiles from a log bucket
-2) Sending the lines from these log files to a MySQL compatible DB
+2) Sending the lines from these log files to a Loki instance
 3) Removing each logfile after processing
 4) Sending metrics to a graphite server 
 
@@ -18,13 +18,11 @@ This script takes care of these log files by
 
 For Python dependencies, see `requirements.txt`.
 
-You also need to install a graphite server and a MySQL DB. 
+You also need to setup a graphite server and a Loki server
 For easy testing and/or deployment, use the following docker containers:
 - [graphiteapp/graphite-statsd](https://hub.docker.com/r/graphiteapp/graphite-statsd)
-- [mariadb](https://hub.docker.com/_/mariadb)
+- [grafana/loki](https://hub.docker.com/r/grafana/loki)
 
-You need to create a database first. After that, you can create the needed 
-table with the help of the provided `setup_db.sql`.
 
 ### Installing
 
@@ -59,17 +57,15 @@ docker run --env-file .env --rm --net=host --name cf-processor unfoldingword/clo
 You need to provide the following environment variables, 
 either through a .env file, or by setting them manually
 
-- `DB_HOST` (e.g. `127.0.0.1`)
-- `DB_USER` (e.g. `root`)
-- `DB_PASSWORD` (e.g. `secretpassword`)
-- `DB_DATABASE` (e.g. `db_log`)
-- `AWS_ACCESS_KEY_ID`
-- `AWS_ACCESS_KEY_SECRET`
-- `AWS_LOG_BUCKET` (e.g. `logs.acme.org`)
-- `GRAPHITE_HOST` (e.g. `localhost`)
-- `GRAPHITE_PREFIX` (e.g. `aws.lambda.cloudfront_logprocessor`)
-- `MAX_FILES` (e.g. `1000`)
-- `STAGE` (`dev` or `prod`)
+- `AWS_ACCESS_KEY_ID` *(your AWS Access Key ID)*
+- `AWS_ACCESS_KEY_SECRET` *(your AWS Access Key Secret)*
+- `AWS_LOG_BUCKET` *(The bucket containing the access log files. E.g. `logs.acme.org`)*
+- `GRAPHITE_HOST` *(Your graphite host, to send metrics to. E.g. `localhost`)*
+- `GRAPHITE_PREFIX` *(Prefix for all graphite entries. E.g. `aws.cloudfront_logprocessor`)*
+- `MAX_FILES` *(Maximum number of files to process per run. E.g. `1000`)*
+- `MAX_LINES` *(Maximum number of log lines to process per run. E.g. `10000`)*
+- `STAGE` (Are you running on `dev` or `prod`?)
+On `dev`, we will pull in files from S3, but not remove them. Also, we are a bit more verbose with logging.
 
 ## Authors
 
@@ -79,6 +75,9 @@ either through a .env file, or by setting them manually
 
 * 0.1
     * Initial Release
+* 0.2
+    * Log messages are written to Loki instead of Mysql DB.
+    * Implemented MAX_LINES ENV variable, mostly for Loki's sake
 
 ## License
 
