@@ -84,7 +84,7 @@ class CloudFrontLogProcessor:
 
         return lst_objects
 
-    def read_log_file(self, filepath):
+    def read_log_file(self, distribution, filepath):
         # Gunzip
         with gzip.open(filepath, 'rt') as logfile:
             # Skip first two lines, as they contain the version resp. the headers
@@ -96,7 +96,7 @@ class CloudFrontLogProcessor:
 
             lst_loglines = []
             for row in reader:
-                lst_loglines.append(row)
+                lst_loglines.append([distribution, row])
 
             self.inc_metric(self.METRIC_LINES_PROCESSED, len(lst_loglines))
             self.inc_metric(self.METRIC_FILES_PROCESSED)
@@ -114,9 +114,13 @@ class CloudFrontLogProcessor:
     def build_loki_lines(self, lst_lines):
         dict_loki_lines = dict()
 
-        for line in lst_lines:
-            # streams/labels: distribution (formerly distribution) and year
-            distribution = line[15]
+        for item in lst_lines:
+            # First element is distribution, needed for stream/label
+            distribution = item[0]
+            # Second element is actual line
+            line = item[1]
+
+            # year, needed for stream/label
             year = line[0].split("-")[0]
 
             if distribution not in dict_loki_lines:
@@ -229,13 +233,16 @@ class CloudFrontLogProcessor:
 
             self.logger.debug("Processing " + file)
 
+            # The Cloudfront 'distribution' is the first part of the filename
+            distribution = file.split("/")[0]
+
             # Download S3 file to temp location
             tmp_file = "/tmp/" + file.replace("/", "_")
             obj_s3_file = self.s3_connection.Object(bucket_name=self.S3_LOG_BUCKET, key=file)
             obj_s3_file.download_file(tmp_file)
 
             # Get the actual data
-            lst_log_lines += self.read_log_file(tmp_file)
+            lst_log_lines += self.read_log_file(distribution, tmp_file)
 
             # Add s3 file to list
             lst_s3_files.append(obj_s3_file)
