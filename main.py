@@ -151,6 +151,7 @@ class CloudFrontLogProcessor:
 
         payload = {"streams": list()}
 
+        total_lines = 0
         for distribution in dict_lines:
             for year in dict_lines[distribution]:
 
@@ -158,6 +159,7 @@ class CloudFrontLogProcessor:
 
                 lst_values = list()
                 for entry in dict_lines[distribution][year]:
+                    total_lines += 1
                     lst_values.append([entry["ts"], entry["line"]])
 
                 payload["streams"].append({"stream": labels, "values": lst_values})
@@ -174,7 +176,7 @@ class CloudFrontLogProcessor:
 
                 if answer.status_code == 400:
                     # 400 - Bad Request:
-                    #   - Entries out of order
+                    #   - Entries out of order;
                     #   - Timestamp too new
                     # Find the amount of ignored lines
                     regex = "total ignored: ([0-9]+) out of"
@@ -184,17 +186,21 @@ class CloudFrontLogProcessor:
 
                 if answer.status_code in [429, 502, 500]:
                     # 429 - Too many requests: Ingestion rate limit exceeded
+                    # 500 - Internal server error:
+                    #   - RPC received message larger than max
                     # 502 - Bad gateway: Loki has issues
-                    # 500 - Server error
                     return False
 
-                # print(answer.status_code)
-                # print(answer.content)
+                self.logger.debug(str(answer.status_code) + str(answer.content))
+
         except requests.exceptions.ConnectionError:
             # In case we cannot even connect
             return False
 
         # By default, all is fine ;-)
+        # Sleep a sec, to give Loki some time to breathe
+        self.logger.debug("Succesfully sent " + str(total_lines) + " lines")
+        time.sleep(1)
         return True
 
     def send_metrics(self):
@@ -221,7 +227,8 @@ class CloudFrontLogProcessor:
             if len(lst_log_lines) >= self.max_lines:
                 break
 
-            # print("Processing " + file)
+            self.logger.debug("Processing " + file)
+
             # Download S3 file to temp location
             tmp_file = "/tmp/" + file.replace("/", "_")
             obj_s3_file = self.s3_connection.Object(bucket_name=self.S3_LOG_BUCKET, key=file)
@@ -236,12 +243,23 @@ class CloudFrontLogProcessor:
             # Remove tmp_file
             os.remove(tmp_file)
 
-        # fold the log lines into a usable structure
-        dict_log_lines = self.build_loki_lines(lst_log_lines)
+        # There are cases when we still go WAY over the maximum number of lines allowed.
+        # This can cause a data overload on the server side, resulting in an HTTP 500 error.
+        # To prevent this, we chunk up our lines in neat batches of max_lines
+        lst_chunked = [lst_log_lines[i:i + self.max_lines] for i in range(0, len(lst_log_lines), self.max_lines)]
 
-        # Send files to loki
-        if self.send_to_loki(dict_log_lines):
-            # Remove files from S3 storage
+        send_to_loki_succeeded = True
+        for lst_sublist in lst_chunked:
+            # fold the log lines into a usable structure
+            dict_log_lines = self.build_loki_lines(lst_sublist)
+
+            # Send files to loki
+            if not self.send_to_loki(dict_log_lines):
+                send_to_loki_succeeded = False
+
+        # Remove files from S3 storage
+        # Only if all send_to_loki operations succeeded (if just only one fails, none of the files will be removed)
+        if send_to_loki_succeeded:
             for s3_file in lst_s3_files:
                 self.remove_log_file(s3_file)
 
