@@ -173,16 +173,19 @@ class CloudFrontLogProcessor:
                 self.set_metric("failure.status-code." + str(answer.status_code), 1)
 
                 if answer.status_code == 400:
-                    # 400 - Bad Request: Entries out of order
+                    # 400 - Bad Request:
+                    #   - Entries out of order
+                    #   - Timestamp too new
                     # Find the amount of ignored lines
                     regex = "total ignored: ([0-9]+) out of"
                     match = re.search(regex, str(answer.content))
                     if len(match.group()) > 0:
                         self.set_metric("lines-failed", int(match.group(1)))
 
-                if answer.status_code in [429, 502]:
+                if answer.status_code in [429, 502, 500]:
                     # 429 - Too many requests: Ingestion rate limit exceeded
                     # 502 - Bad gateway: Loki has issues
+                    # 500 - Server error
                     return False
 
                 # print(answer.status_code)
