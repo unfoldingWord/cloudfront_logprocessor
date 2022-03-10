@@ -228,8 +228,8 @@ class CloudFrontLogProcessor:
 
         for file in lst_files:
             # Try to prevent Ingestion rate limit issue
-            if len(lst_log_lines) >= self.max_lines:
-                break
+            # if len(lst_log_lines) >= self.max_lines:
+            #    break
 
             self.logger.debug("Processing " + file)
 
