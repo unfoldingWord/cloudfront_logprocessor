@@ -37,10 +37,11 @@ class CloudFrontLogProcessor:
         self.max_files = int(os.getenv("MAX_FILES"))
         self.max_lines = int(os.getenv("MAX_LINES"))
 
-        # Constants
+        # Constants for metrics
         self.METRIC_FILES_PROCESSED = "files-processed"
         self.METRIC_LINES_PROCESSED = "lines-processed"
-        self.METRIC_FAILURE_IN_BATCH = "failure-in-batch"
+        self.METRIC_LINES_SENT = "lines-sent"
+        self.METRIC_FAILURE_IN_BATCH = "failures-in-batch"
         self.METRIC_MEMORY_USAGE_MIN = "memory-usage-min"
         self.METRIC_MEMORY_USAGE_MAX = "memory-usage-max"
         self.METRIC_TIME_ELAPSED = "time_elapsed"
@@ -51,6 +52,7 @@ class CloudFrontLogProcessor:
         metrics = dict()
         metrics[self.METRIC_FILES_PROCESSED] = 0
         metrics[self.METRIC_LINES_PROCESSED] = 0
+        metrics[self.METRIC_LINES_SENT] = 0
         metrics[self.METRIC_FAILURE_IN_BATCH] = 0
         metrics[self.METRIC_MEMORY_USAGE_MIN] = 0
         metrics[self.METRIC_MEMORY_USAGE_MAX] = 0
@@ -59,7 +61,10 @@ class CloudFrontLogProcessor:
         return metrics
 
     def inc_metric(self, metric, incr=1):
-        self.dict_metrics[metric] += incr
+        if metric not in self.dict_metrics:
+            self.dict_metrics[metric] = incr
+        else:
+            self.dict_metrics[metric] += incr
 
     def set_metric(self, metric, value):
         self.dict_metrics[metric] = value
@@ -143,7 +148,7 @@ class CloudFrontLogProcessor:
         # in the correct order. This prevents almost all 'entry too far behind' issues.
         for distribution in dict_loki_lines:
             for year in dict_loki_lines[distribution]:
-                dict_loki_lines[distribution][year].sort(key=lambda item: item.get("ts"))
+                dict_loki_lines[distribution][year].sort(key=lambda log_item: log_item.get("ts"))
 
         return dict_loki_lines
 
@@ -175,18 +180,20 @@ class CloudFrontLogProcessor:
             answer = requests.post(url, data=payload, headers=headers)
 
             if answer.status_code != 204:
-                self.set_metric(self.METRIC_FAILURE_IN_BATCH, 1)
-                self.set_metric("failure.status-code." + str(answer.status_code), 1)
+                self.inc_metric(self.METRIC_FAILURE_IN_BATCH, 1)
+                self.inc_metric("failure.status-code." + str(answer.status_code), 1)
 
                 if answer.status_code == 400:
+                    # This is not considered fatal, but we keep track of the failed lines for manual intervention
+
                     # 400 - Bad Request:
-                    #   - Entries out of order;
+                    #   - Entry too far behind;
                     #   - Timestamp too new
                     # Find the amount of ignored lines
                     regex = "total ignored: ([0-9]+) out of"
                     match = re.search(regex, str(answer.content))
                     if len(match.group()) > 0:
-                        self.set_metric("lines-failed", int(match.group(1)))
+                        self.inc_metric("lines-failed-non-fatal", int(match.group(1)))
 
                 if answer.status_code in [429, 502, 500]:
                     # 429 - Too many requests: Ingestion rate limit exceeded
@@ -204,8 +211,28 @@ class CloudFrontLogProcessor:
         # By default, all is fine ;-)
         # Sleep a sec, to give Loki some time to breathe
         self.logger.debug("Succesfully sent " + str(total_lines) + " lines")
+        self.inc_metric(self.METRIC_LINES_SENT, total_lines)
         time.sleep(1)
         return True
+
+    def send_logs_in_chunks(self, lst_log_lines):
+        # There are cases when we still go WAY over the maximum number of lines allowed.
+        # This can cause a data overload on the server side, resulting in an HTTP 500 error.
+        # To prevent this, we chunk up our lines in neat batches of max_lines
+        lst_chunked = [lst_log_lines[i:i + self.max_lines] for i in range(0, len(lst_log_lines), self.max_lines)]
+
+        # We consider the operation successful if all sends were successful.
+        # If only one fails, we consider everything failed, and eventually return false
+        send_to_loki_succeeded = True
+        for lst_sublist in lst_chunked:
+            # fold the log lines into a usable structure
+            dict_log_lines = self.build_loki_lines(lst_sublist)
+
+            # Send files to loki
+            if not self.send_to_loki(dict_log_lines):
+                send_to_loki_succeeded = False
+
+        return send_to_loki_succeeded
 
     def send_metrics(self):
         graphite_host = os.getenv("GRAPHITE_HOST")
@@ -247,23 +274,25 @@ class CloudFrontLogProcessor:
             # Remove tmp_file
             os.remove(tmp_file)
 
-        # There are cases when we still go WAY over the maximum number of lines allowed.
-        # This can cause a data overload on the server side, resulting in an HTTP 500 error.
-        # To prevent this, we chunk up our lines in neat batches of max_lines
-        lst_chunked = [lst_log_lines[i:i + self.max_lines] for i in range(0, len(lst_log_lines), self.max_lines)]
+            # If we go over our max lines, let's flush, to keep our memory within bounds
+            if len(lst_log_lines) >= self.max_lines:
+                self.logger.debug("Inbetween flushing to disk after %d files" % len(lst_s3_files))
 
-        send_to_loki_succeeded = True
-        for lst_sublist in lst_chunked:
-            # fold the log lines into a usable structure
-            dict_log_lines = self.build_loki_lines(lst_sublist)
+                if self.send_logs_in_chunks(lst_log_lines):
+                    # Remove files from S3 storage, only if all chunks could be sent successfully 
+                    # (if just only one fails, none of the files will be removed)
+                    for s3_file in lst_s3_files:
+                        self.remove_log_file(s3_file)
 
-            # Send files to loki
-            if not self.send_to_loki(dict_log_lines):
-                send_to_loki_succeeded = False
+                # Reset our lists
+                lst_log_lines = list()
+                lst_s3_files = list()
 
-        # Remove files from S3 storage
-        # Only if all send_to_loki operations succeeded (if just only one fails, none of the files will be removed)
-        if send_to_loki_succeeded:
+        # Process the tail end of logs
+        # Actually, this will always be one chunk, as we always flush when we reach our max_lines
+        if self.send_logs_in_chunks(lst_log_lines):
+            # Remove files from S3 storage, only if all chunks could be sent successfully 
+            # (if just only one fails, none of the files will be removed)
             for s3_file in lst_s3_files:
                 self.remove_log_file(s3_file)
 
