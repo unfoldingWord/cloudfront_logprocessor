@@ -32,6 +32,9 @@ class CloudFrontLogProcessor:
         self.S3_LOG_BUCKET = os.getenv("AWS_LOG_BUCKET")
         self.s3_connection = aws_session.resource("s3")
         self.s3_log_bucket = self.s3_connection.Bucket(self.S3_LOG_BUCKET)
+        self.included_distributions = list()
+        if os.getenv("AWS_DISTRIBUTIONS"):
+            self.included_distributions = os.getenv("AWS_DISTRIBUTIONS").split(",")
 
         self.loki_api_path = os.getenv("LOKI_API_PATH")
         self.max_files = int(os.getenv("MAX_FILES"))
@@ -76,17 +79,30 @@ class CloudFrontLogProcessor:
         lst_objects = list()
 
         # List objects within this bucket
-        max_iter = self.max_files
-
         current_iter = 0
-        for obj in self.s3_log_bucket.objects.all():
-            lst_objects.append(obj.key)
 
-            current_iter += 1
+        if len(self.included_distributions) > 0:
+            for distro in self.included_distributions:
+                self.logger.debug("Processing distribution " + distro)
+                for obj in self.s3_log_bucket.objects.filter(Prefix=distro):
+                    lst_objects.append(obj.key)
 
-            if current_iter == int(max_iter):
-                break
+                    current_iter += 1
 
+                    if current_iter == int(self.max_files):
+                        return lst_objects
+
+        else:
+            # No specific distributions listed, so we get them all
+            for obj in self.s3_log_bucket.objects.all():
+                lst_objects.append(obj.key)
+
+                current_iter += 1
+
+                if current_iter == int(self.max_files):
+                    return lst_objects
+
+        # This point should seldom be reached, as this only happens when there are no objects to be processed
         return lst_objects
 
     def read_log_file(self, distribution, filepath):
