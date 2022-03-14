@@ -132,6 +132,17 @@ class CloudFrontLogProcessor:
             self.logger.debug("Removing file %s" % obj_s3_file.key)
             obj_s3_file.delete()
 
+    def scrub_log_message(self, lst_message):
+        lst_this_message = lst_message
+
+        for field in range(len(lst_this_message)):
+            # scrub IP address
+            regex = r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+            if re.fullmatch(regex, lst_this_message[field]):
+                lst_this_message[field] = "-"
+
+        return lst_this_message
+
     def build_loki_lines(self, lst_lines):
         dict_loki_lines = dict()
 
@@ -154,6 +165,9 @@ class CloudFrontLogProcessor:
             ts = datetime.datetime.strptime(line[0] + " " + line[1], "%Y-%m-%d %H:%M:%S").timestamp()
             # timestamp() returns float, so we convert to int to get rid of the '.0'
             ts = str(int(ts)) + "000000000"
+
+            # Scrub PII data from log
+            line = self.scrub_log_message(line)
 
             # build the line and add to dictionary
             loki_line = "\t".join(line)
