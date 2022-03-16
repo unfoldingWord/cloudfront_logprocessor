@@ -43,6 +43,11 @@ class CloudFrontLogProcessor:
         self.loki_api_path = os.getenv("LOKI_API_PATH")
         self.max_files = int(os.getenv("MAX_FILES"))
         self.max_lines = int(os.getenv("MAX_LINES"))
+        if os.getenv("IMPORT_UNTIL_TODAY"):
+            self.import_until_today = os.getenv("IMPORT_UNTIL_TODAY").capitalize() == "True"
+        else:
+            # Default, we set it to True
+            self.import_until_today = True
 
         # Constants for metrics
         self.METRIC_FILES_PROCESSED = "files-processed"
@@ -100,8 +105,7 @@ class CloudFrontLogProcessor:
                     # too low, this will results in lots of small files, hampering Loki performance.
                     # By only importing till 'today', thus ensuring each day has a full round of logs,
                     # we try to avoid this problem.
-                    import_until_today = os.getenv("IMPORT_UNTIL_TODAY").capitalize() == "True"
-                    if import_until_today is True and ts_this >= ts_today:
+                    if self.import_until_today is True and ts_this >= ts_today:
                         self.logger.debug("Current timestamp {0} is higher than today's timestamp {1}".format(ts_this, ts_today))
                         break
 
