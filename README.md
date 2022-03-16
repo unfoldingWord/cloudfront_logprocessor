@@ -1,6 +1,6 @@
 # AWS CloudFront Standard Log Processor
 
-With this script, you can process the Standard Log files from AWS
+Import Standard Log files from AWS into Loki
 
 ## Description
 
