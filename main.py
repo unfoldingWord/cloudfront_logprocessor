@@ -17,11 +17,15 @@ class CloudFrontLogProcessor:
     def __init__(self):
         load_dotenv()
 
-        self.logger = logging.getLogger("cf_logger")
+        # Init logging, level by default is INFO
+        log_level = logging.INFO
         if os.getenv("STAGE") == "dev":
-            self.logger.setLevel(logging.DEBUG)
-        else:
-            self.logger.setLevel(logging.INFO)
+            log_level = logging.DEBUG
+
+        logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        # logger = logging.getLogger("global")
+        self.logger = logging.getLogger("global").getChild("cf_logger")
+        self.logger.setLevel(log_level)
 
         # S3 connection setup
         aws_session = boto3.Session(
@@ -344,7 +348,7 @@ class CloudFrontLogProcessor:
 
 # Don't remove the next empty logging statement.
 # I need this, otherwise logging doesn't start at all. Bug or my stupidity?
-logging.info("")
+# logging.info("")
 
 obj_CFProc = CloudFrontLogProcessor()
 obj_CFProc.run()
