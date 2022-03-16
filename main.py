@@ -85,10 +85,26 @@ class CloudFrontLogProcessor:
         # List objects within this bucket
         current_iter = 0
 
+        # Create timestamp for today at 00:00:00
+        ts_today = int(datetime.datetime.combine(datetime.date.today(), datetime.time()).timestamp())
+
         if len(self.included_distributions) > 0:
             for distro in self.included_distributions:
                 self.logger.debug("Processing distribution " + distro)
                 for obj in self.s3_log_bucket.objects.filter(Prefix=distro):
+                    ts_this = int(obj.last_modified.timestamp())
+
+                    # If configured, for each distribution we only import until (not including) today.
+                    #
+                    # Loki chunks have a configured inactive time before they get flushed to disk. If the data flow is
+                    # too low, this will results in lots of small files, hampering Loki performance.
+                    # By only importing till 'today', thus ensuring each day has a full round of logs,
+                    # we try to avoid this problem.
+                    import_until_today = os.getenv("IMPORT_UNTIL_TODAY").capitalize() == "True"
+                    if import_until_today is True and ts_this >= ts_today:
+                        self.logger.debug("Current timestamp {0} is higher than today's timestamp {1}".format(ts_this, ts_today))
+                        break
+
                     lst_objects.append(obj.key)
 
                     current_iter += 1
@@ -345,10 +361,6 @@ class CloudFrontLogProcessor:
         # Finish off by sending all collected metrics to graphite
         self.send_metrics()
 
-
-# Don't remove the next empty logging statement.
-# I need this, otherwise logging doesn't start at all. Bug or my stupidity?
-# logging.info("")
 
 obj_CFProc = CloudFrontLogProcessor()
 obj_CFProc.run()
