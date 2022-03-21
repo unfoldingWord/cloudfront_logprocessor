@@ -235,6 +235,7 @@ class CloudFrontLogProcessor:
             if answer.status_code != 204:
                 self.inc_metric(self.METRIC_FAILURE_IN_BATCH, 1)
                 self.inc_metric("failure.status-code." + str(answer.status_code), 1)
+                self.logger.debug(str(answer.status_code) + str(answer.content))
 
                 if answer.status_code == 400:
                     # This is not considered fatal, but we keep track of the failed lines for manual intervention
@@ -254,8 +255,6 @@ class CloudFrontLogProcessor:
                     #   - RPC received message larger than max
                     # 502 - Bad gateway: Loki has issues
                     return False
-
-                self.logger.debug(str(answer.status_code) + str(answer.content))
 
         except requests.exceptions.ConnectionError:
             # In case we cannot even connect
