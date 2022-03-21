@@ -19,11 +19,10 @@ class CloudFrontLogProcessor:
 
         # Init logging, level by default is INFO
         log_level = logging.INFO
-        if os.getenv("STAGE") == "dev":
+        if os.getenv("LOG_LEVEL") and os.getenv("LOG_LEVEL") == "debug":
             log_level = logging.DEBUG
 
         logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-        # logger = logging.getLogger("global")
         self.logger = logging.getLogger("global").getChild("cf_logger")
         self.logger.setLevel(log_level)
 
