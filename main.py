@@ -283,7 +283,12 @@ class CloudFrontLogProcessor:
 
             # Send files to loki
             if not self.send_to_loki(dict_log_lines):
+                # We stop processing data, because a potentially fatal sending error occurred.
+                # When we would continue, not processed files will eventually become useless because their timestamps
+                # would get too far behind, causing a 'HTTP 400 - Entry too far' behind error.
                 send_to_loki_succeeded = False
+                self.logger.warning("A fatal error occurred. Processing has been interrupted.")
+                break
 
         return send_to_loki_succeeded
 
@@ -306,6 +311,7 @@ class CloudFrontLogProcessor:
         lst_log_lines = list()
         lst_s3_files = list()
 
+        sending_succeeded = True
         for file in lst_files:
 
             self.logger.debug("Processing " + file)
@@ -336,6 +342,10 @@ class CloudFrontLogProcessor:
                     # (if just only one fails, none of the files will be removed)
                     for s3_file in lst_s3_files:
                         self.remove_log_file(s3_file)
+                else:
+                    # We interrupt our processing. Manual intervention is needed.
+                    sending_succeeded = False
+                    break
 
                 # Reset our lists
                 lst_log_lines = list()
@@ -343,11 +353,12 @@ class CloudFrontLogProcessor:
 
         # Process the tail end of logs
         # Actually, this will always be one chunk, as we always flush when we reach our max_lines
-        if self.send_logs_in_chunks(lst_log_lines):
-            # Remove files from S3 storage, only if all chunks could be sent successfully 
-            # (if just only one fails, none of the files will be removed)
-            for s3_file in lst_s3_files:
-                self.remove_log_file(s3_file)
+        if sending_succeeded is True:
+            if self.send_logs_in_chunks(lst_log_lines):
+                # Remove files from S3 storage, only if all chunks could be sent successfully
+                # (if just only one fails, none of the files will be removed)
+                for s3_file in lst_s3_files:
+                    self.remove_log_file(s3_file)
 
         # Finally, collect performance metrics
         time_end = time.perf_counter()
