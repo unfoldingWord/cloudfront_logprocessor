@@ -287,7 +287,7 @@ class CloudFrontLogProcessor:
                 # When we would continue, not processed files will eventually become useless because their timestamps
                 # would get too far behind, causing a 'HTTP 400 - Entry too far behind' error.
                 send_to_loki_succeeded = False
-                self.logger.warning("A fatal error occurred. Processing has been interrupted.")
+                self.logger.error("A fatal error occurred. Processing has been interrupted.")
                 break
 
         return send_to_loki_succeeded
