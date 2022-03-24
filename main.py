@@ -285,7 +285,7 @@ class CloudFrontLogProcessor:
             if not self.send_to_loki(dict_log_lines):
                 # We stop processing data, because a potentially fatal sending error occurred.
                 # When we would continue, not processed files will eventually become useless because their timestamps
-                # would get too far behind, causing a 'HTTP 400 - Entry too far' behind error.
+                # would get too far behind, causing a 'HTTP 400 - Entry too far behind' error.
                 send_to_loki_succeeded = False
                 self.logger.warning("A fatal error occurred. Processing has been interrupted.")
                 break
