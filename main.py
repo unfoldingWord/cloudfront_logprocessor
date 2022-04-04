@@ -252,7 +252,8 @@ class CloudFrontLogProcessor:
                 if answer.status_code in [429, 502, 500]:
                     # 429 - Too many requests: Ingestion rate limit exceeded
                     # 500 - Internal server error:
-                    #   - RPC received message larger than max
+                    #   - RPC error: Received message larger than max
+                    #   - RPC error: Context deadline exceeded
                     # 502 - Bad gateway: Loki has issues
                     return False
 
