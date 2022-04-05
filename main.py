@@ -254,6 +254,7 @@ class CloudFrontLogProcessor:
                     # 500 - Internal server error:
                     #   - RPC error: Received message larger than max
                     #   - RPC error: Context deadline exceeded
+                    #   - RPC error: Unavailable, error reading from server
                     # 502 - Bad gateway: Loki has issues
                     return False
 
