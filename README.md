@@ -28,7 +28,7 @@ For easy testing and/or deployment, use the following docker containers:
 
 - Clone this repository
 ```
-git clone git@github.com:unfoldingWord-dev/cloudfront_logprocessor
+git clone git@github.com:unfoldingWord/cloudfront_logprocessor
 cd 
 pip install -r requirements.txt
 ```
