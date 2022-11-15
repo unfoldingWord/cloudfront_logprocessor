@@ -33,12 +33,12 @@ cd cloudfront_logprocessor
 pip install -r requirements.txt
 ```
 
-- Or pull the docker container from [here](https://hub.docker.com/r/unfoldingword/cloudfront_logprocessor)
+- Or pull the docker image from [here](https://hub.docker.com/r/unfoldingword/cloudfront_logprocessor)
 ```
 docker pull unfoldingword/cloudfront_logprocessor
 ```
 
-- Or build your own docker container with the help of the provided Dockerfile
+- Or build your own docker image with the help of the provided Dockerfile
 ```
 docker build -t <dockerhub-username>/<repo-name> .
 ```
