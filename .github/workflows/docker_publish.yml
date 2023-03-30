@@ -20,7 +20,7 @@ jobs:
           DOCKER_TAGS="${BRANCH},latest"
           echo "DOCKER_TAGS=${DOCKER_TAGS}" >> $GITHUB_ENV
       - name: Publish Docker Github Action
-        uses: elgohr/Publish-Docker-Github-Action@master
+        uses: elgohr/Publish-Docker-Github-Action@v5
         with:
           name: unfoldingword/cloudfront_logprocessor
           username: ${{ secrets.DOCKER_USERNAME }}
